@@ -1161,13 +1161,8 @@ class EmbezzleMainWindow(QMainWindow):
             data_weights = self.model_builder.training_weights if hasattr(self.model_builder, 'training_weights') else None
             data_source = "training_data"
             logger.info(f"Using training_data for levels table with {len(data)} rows")
-        elif hasattr(self.model_builder, 'filtered_data') and self.model_builder.filtered_data is not None:
-            data = self.model_builder.filtered_data
-            data_weights = self.model_builder.filtered_weights if hasattr(self.model_builder, 'filtered_weights') else None
-            data_source = "filtered_data"
-            logger.info(f"Using filtered_data for levels table with {len(data)} rows")
         else:
-            # If no filtered data available, use the full dataset
+            # If no training data available, use the full dataset
             data = self.data
             data_weights = self.model_builder.weights if hasattr(self.model_builder, 'weights') else None
             data_source = "full_data"
