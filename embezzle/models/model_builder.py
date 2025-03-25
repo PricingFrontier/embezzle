@@ -10,6 +10,7 @@ import pandas as pd
 import statsmodels.api as sm
 import pickle
 import os
+import logging
 from statsmodels.genmod.families import (
     Gaussian, Binomial, Poisson, Gamma, InverseGaussian, 
     NegativeBinomial, Tweedie
@@ -17,6 +18,9 @@ from statsmodels.genmod.families import (
 from statsmodels.genmod.families.links import (
     Identity, Log, Logit, Power, Probit, CLogLog, NegativeBinomial as NBLink
 )
+
+# Configure logging
+logger = logging.getLogger(__name__)
 
 class GLMBuilder:
     """
@@ -39,7 +43,9 @@ class GLMBuilder:
         self.alpha = 1.0  # Default for power link
         self.exposure = None
         self.training_data = None  # For filtered training data
-        self.training_weights = None  # For filtered weights
+        self.training_weights = None  # For filtered weightsself.predictor_data
+        self.predictor_data = None # For filtered prediction data
+        self.predictor_weights = None # For filtered prediction weights
         
         # Available families and links
         self.available_families = {
@@ -269,7 +275,7 @@ class GLMBuilder:
         Parameters
         ----------
         new_data : pandas.DataFrame, optional
-            New data for prediction. If None, uses the training data.
+            New data for prediction. If None, uses the predictor_data if available, otherwise uses the training data.
         
         Returns
         -------
@@ -279,11 +285,13 @@ class GLMBuilder:
         if self.results is None:
             raise ValueError("Model must be fit before making predictions")
         
-        if new_data is None:
-            return self.results.predict()
-        else:
+        if new_data is not None:
             return self.results.predict(new_data)
-
+        elif self.predictor_data is not None:
+            return self.results.predict(self.predictor_data)
+        else:
+            return self.results.predict()
+    
     def get_aic(self):
         """Get Akaike Information Criterion for the fitted model."""
         if self.results is None:
@@ -358,7 +366,7 @@ class GLMBuilder:
                 pickle.dump(model_data, f)
             return True
         except Exception as e:
-            print(f"Error saving model: {str(e)}")
+            logger.error(f"Error saving model: {str(e)}")
             return False
             
     def load_model(self, file_path):
@@ -398,7 +406,7 @@ class GLMBuilder:
             
             return True
         except Exception as e:
-            print(f"Error loading model: {str(e)}")
+            logger.error(f"Error loading model: {str(e)}")
             return False
 
     def set_training_data(self, split_column, train_partition):
@@ -418,6 +426,9 @@ class GLMBuilder:
         bool
             True if training data creation was successful, False otherwise
         """
+        logger.info("Setting training data...")
+        logger.info(f"Split column: {split_column}, Train partition: {train_partition}")
+        
         if self.data is None:
             raise ValueError("Data must be loaded before creating training data")
             
@@ -427,6 +438,7 @@ class GLMBuilder:
         try:
             # Create filtered dataset based on the split column and train partition
             self.training_data = self.data[self.data[split_column] == train_partition].copy()
+            logger.info(f"Created training data with {len(self.training_data)} rows")
             
             # Create corresponding weights if weights exist
             if self.weights is not None:
@@ -438,21 +450,109 @@ class GLMBuilder:
                     self.training_weights = self.weights.loc[self.training_data.index].values
                 else:
                     raise ValueError("Weights must be a numpy array or pandas Series")
+                logger.info(f"Filtered training weights, length: {len(self.training_weights) if self.training_weights is not None else 'None'}")
+            else:
+                logger.info("No weights available for training data")
             
             return True
         except Exception as e:
-            print(f"Error creating training data: {str(e)}")
+            logger.error(f"Error creating training data: {str(e)}")
             return False
             
     def clear_training_data(self):
         """
-        Clear the training data and weights, reverting to using the full dataset.
+        Clear the training data, reverting to using the full dataset for training
+        
+        Returns
+        -------
+        bool
+            True if successful
+        """
+        logger.info("Clearing training data, reverting to full dataset for training")
+        try:
+            self.training_data = None
+            self.training_weights = None
+            logger.info("Training data cleared successfully")
+            return True
+        except Exception as e:
+            logger.error(f"Error clearing training data: {str(e)}")
+            return False
+
+    def set_prediction_data(self, split_column, prediction_partition):
+        """
+        Create a filtered dataset for predictions based on split column and prediction partition value.
+        
+        Parameters
+        ----------
+        split_column : str
+            Column name to use for filtering data
+        prediction_partition : str or int or float or 'all'
+            Value in the split column to filter for. Only rows where
+            split_column equals prediction_partition will be included in predictor_data.
+            If 'all', the entire dataset will be used.
+        
+        Returns
+        -------
+        bool
+            True if prediction data creation was successful, False otherwise
+        """
+        logger.info("Setting prediction data...")
+        logger.info(f"Split column: {split_column}, Prediction partition: {prediction_partition}") 
+        if self.data is None:
+            raise ValueError("Data must be loaded before creating prediction data")
+            
+        if split_column not in self.data.columns and prediction_partition != 'all':
+            raise ValueError(f"Split column '{split_column}' not found in data")
+            
+        try:
+            # Initialize predictor_weights to None by default
+            self.predictor_weights = None
+            
+            # If 'all' is selected, use the entire dataset
+            if prediction_partition == 'all':
+                self.predictor_data = self.data.copy()
+                if self.weights is not None:
+                    self.predictor_weights = self.weights
+                    logger.info(f"Using all weights, length: {len(self.predictor_weights) if self.predictor_weights is not None else 'None'}")
+                else:
+                    logger.info("No weights available for prediction data")
+            else:
+                # Create filtered dataset based on the split column and prediction partition
+                self.predictor_data = self.data[self.data[split_column] == prediction_partition].copy()
+                
+                # Create corresponding weights if weights exist
+                if self.weights is not None:
+                    if isinstance(self.weights, np.ndarray):
+                        # Convert weights to Series with same index as data for proper filtering
+                        weights_series = pd.Series(self.weights, index=self.data.index)
+                        self.predictor_weights = weights_series.loc[self.predictor_data.index].values
+                    elif isinstance(self.weights, pd.Series):
+                        self.predictor_weights = self.weights.loc[self.predictor_data.index].values
+                    else:
+                        raise ValueError("Weights must be a numpy array or pandas Series")
+                    logger.info(f"Filtered weights for partition, length: {len(self.predictor_weights) if self.predictor_weights is not None else 'None'}")
+                else:
+                    logger.info("No weights available for prediction data")
+            
+            logger.info(f"Created prediction data with {len(self.predictor_data)} rows")
+            logger.info(f"Predictor weights: {type(self.predictor_weights).__name__}, {len(self.predictor_weights) if self.predictor_weights is not None else 'None'}")
+            return True
+        except Exception as e:
+            logger.error(f"Error creating prediction data: {str(e)}")
+            # Reset predictor data on error
+            self.predictor_data = None
+            self.predictor_weights = None
+            return False
+            
+    def clear_prediction_data(self):
+        """
+        Clear the prediction data and weights, reverting to using the full dataset.
         
         Returns
         -------
         bool
             True if clearing was successful
         """
-        self.training_data = None
-        self.training_weights = None
+        self.predictor_data = None
+        self.predictor_weights = None
         return True

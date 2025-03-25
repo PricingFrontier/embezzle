@@ -5,12 +5,15 @@ This module provides a dialog for specifying GLM model parameters, including
 error families, link functions, and other configuration options.
 """
 
+import logging
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QComboBox, QRadioButton, 
     QGroupBox, QDialogButtonBox, QLineEdit, QButtonGroup, QHBoxLayout, QLabel
 )
 from PyQt6.QtCore import Qt
 
+# Configure logging
+logger = logging.getLogger(__name__)
 
 class ModelSpecificationDialog(QDialog):
     """Dialog for specifying model parameters"""
@@ -152,6 +155,8 @@ class ModelSpecificationDialog(QDialog):
             
     def _update_train_partition_combo(self, split_column):
         """Update the train partition combo with unique values from the split column"""
+        logger.debug(f"Updating train partition combo with split column: {split_column}")
+        
         # Show/hide the train partition dropdown based on split column selection
         has_split = split_column and split_column != "(None)"
         self.train_partition_label.setVisible(has_split)
@@ -164,8 +169,23 @@ class ModelSpecificationDialog(QDialog):
             if split_column in self.parent.data.columns:
                 # Get unique values from the split column
                 unique_values = self.parent.data[split_column].unique()
+                logger.debug(f"Found {len(unique_values)} unique values in split column {split_column}")
+                
+                # Add the unique values to the dropdown
                 for value in unique_values:
                     self.train_partition_combo.addItem(str(value))
+                    
+                # If model_specs already has a train_partition value, select it
+                if (hasattr(self.parent, 'model_specs') and 
+                    self.parent.model_specs and 
+                    'train_partition' in self.parent.model_specs):
+                    train_partition = str(self.parent.model_specs['train_partition'])
+                    index = self.train_partition_combo.findText(train_partition)
+                    if index >= 0:
+                        logger.debug(f"Pre-selecting train partition: {train_partition}")
+                        self.train_partition_combo.setCurrentIndex(index)
+        else:
+            logger.warning("No data available to populate train partition dropdown")
             
     def _create_error_group(self):
         """Create the error structure (family) group box"""
@@ -272,6 +292,8 @@ class ModelSpecificationDialog(QDialog):
         
     def get_model_specs(self):
         """Get the model specifications from the dialog"""
+        logger.info("Getting model specifications from dialog")
+        
         specs = {
             'response_variable': self.response_combo.currentText() if self.response_combo.currentText() != "(None)" else None,
             'weight_column': self.weight_combo.currentText() if self.weight_combo.currentText() != "(None)" else None,
@@ -297,6 +319,9 @@ class ModelSpecificationDialog(QDialog):
             except ValueError:
                 # Handle invalid input
                 pass
+        
+        logger.info(f"Model specs: response={specs['response_variable']}, weight={specs['weight_column']}, " +
+                   f"split={specs['split_column']}, train={specs['train_partition']}, family={specs['family']}, link={specs['link']}")
         
         return specs
         

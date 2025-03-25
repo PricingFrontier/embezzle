@@ -16,6 +16,7 @@ from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QAction
 import pandas as pd
 import numpy as np
+import logging
 
 from embezzle.models.model_builder import GLMBuilder
 from embezzle.ui.model_specification_dialog import ModelSpecificationDialog
@@ -92,6 +93,7 @@ class EmbezzleMainWindow(QMainWindow):
         
         # Create the predictors sidebar (left side)
         self.predictors_sidebar = PredictorsSidebar()
+        self.predictors_sidebar.mainwindow_reference = self  # Add direct reference to the main window
         self.main_splitter.addWidget(self.predictors_sidebar)
         
         # Connect the Fit button
@@ -429,14 +431,23 @@ class EmbezzleMainWindow(QMainWindow):
             self.statusBar.showMessage(f"Using '{response_variable}' as response variable")
         
         # Set the weight column
-        if weight_column:
+        if weight_column and weight_column in self.data.columns:
             self.statusBar.showMessage(f"Using '{weight_column}' as weight column")
+            # Set the weights in the model builder
+            logger = logging.getLogger(__name__)
+            logger.info(f"Setting weights from column '{weight_column}'")
+            weights = self.data[weight_column]
+            self.model_builder.set_weights(weights)
+            logger.info(f"Weights set, length: {len(weights)}")
         
         # Set the split column
         if split_column:
             self.statusBar.showMessage(f"Using '{split_column}' for train/test/validation splits")
             # Update the prediction set dropdown in the predictor sidebar
             self.predictors_sidebar.update_prediction_set_combo(split_column, self.data)
+            
+            # Initialize prediction data based on the current selection in the dropdown
+            self.update_prediction_data()
             
             # Store current predictor terms to preserve them
             current_terms = self.predictors_sidebar.get_model_terms()
@@ -471,7 +482,8 @@ class EmbezzleMainWindow(QMainWindow):
                 self.update_predictor_chart(predictor)
             except Exception as e:
                 self.statusBar.showMessage(f"Error updating visualization: {str(e)}")
-                print(f"Visualization error: {str(e)}")
+                logger = logging.getLogger(__name__)
+                logger.error(f"Visualization error: {str(e)}")
         
         # If we had a fitted model before changing training data, re-fit to update parameters
         if had_model and len(current_terms) > 0:
@@ -496,7 +508,8 @@ class EmbezzleMainWindow(QMainWindow):
                 self.statusBar.showMessage(f"Model automatically refitted with new training data.")
             except Exception as e:
                 self.statusBar.showMessage(f"Error refitting model: {str(e)}")
-                print(f"Model refitting error: {str(e)}")
+                logger = logging.getLogger(__name__)
+                logger.error(f"Model refitting error: {str(e)}")
         
         # Set family and link
         family = self.model_specs.get('family')
@@ -607,7 +620,8 @@ class EmbezzleMainWindow(QMainWindow):
                 try:
                     self.model_builder.set_family(family_map[family], link_map[link])
                 except Exception as e:
-                    print(f"Warning: {e}. Using default Gaussian family with Identity link.")
+                    logger = logging.getLogger(__name__)
+                    logger.warning(f"Warning: {e}. Using default Gaussian family with Identity link.")
                     self.model_builder.set_family("gaussian", "identity")
             
             # Set weights if specified
@@ -689,48 +703,45 @@ class EmbezzleMainWindow(QMainWindow):
         predictor_column : str
             The name of the selected predictor column
         """
+        logger = logging.getLogger(__name__)
+        logger.info(f"Updating chart for predictor: {predictor_column}")
+        
+        # Clear the current chart
+        self.chart_canvas.axes.clear()
+        self.chart_canvas.count_axes.clear()
+        
+        # Only proceed if we have data and a valid predictor column
         if self.data is None or predictor_column not in self.data.columns:
             self.chart_canvas.clear_plot()
             return
+            
+        # Get model specifications
+        response = None
+        weights = None
         
-        # Get response from model specs
-        response = self.model_specs.get('response_variable')
-        if not response:
+        if self.model_specs:
+            response = self.model_specs.get('response_variable')
+            weights = self.model_specs.get('weight_column')
+        
+        # Only create chart if we have a response variable
+        if response is None or response not in self.data.columns:
             self.chart_canvas.clear_plot()
             return
-        
-        # Store the selected predictor for reference
-        self.predictors_sidebar.selected_predictor = predictor_column
             
-        # Get weights column if specified
-        weights = self.model_specs.get('weight_column')
+        # Block signals to avoid recursive updates while setting spinner values
+        self.min_value_spinner.blockSignals(True)
+        self.max_value_spinner.blockSignals(True)
+        self.intervals_spinner.blockSignals(True)
         
-        # Determine if the predictor is continuous
-        is_continuous = pd.api.types.is_numeric_dtype(self.data[predictor_column])
-        
-        # Show or hide continuous controls depending on predictor type
-        self.continuous_controls.setVisible(is_continuous)
-        
-        custom_bins = None
-        
-        # Update min/max spinners with data range if continuous
-        if is_continuous:
-            # Block signals to avoid triggering unnecessary updates when setting values
-            self.min_value_spinner.blockSignals(True)
-            self.max_value_spinner.blockSignals(True)
-            self.intervals_spinner.blockSignals(True)
-            
-            # If we have saved settings for this predictor, use them
+        # Set proper ranges for the controls if this is a numeric column
+        if pd.api.types.is_numeric_dtype(self.data[predictor_column]):
+            # Get binning settings from saved dict or calculate new ones
             if predictor_column in self.predictor_binning_settings:
-                settings = self.predictor_binning_settings[predictor_column]
-                self.min_value_spinner.setValue(settings['min'])
-                self.max_value_spinner.setValue(settings['max'])
-                self.intervals_spinner.setValue(settings['n_bins'])
-                
-                # Use custom bins for chart update
-                custom_bins = settings
+                min_val = self.predictor_binning_settings[predictor_column]['min']
+                max_val = self.predictor_binning_settings[predictor_column]['max']
+                n_bins = self.predictor_binning_settings[predictor_column]['n_bins']
             else:
-                # Initialize with defaults from data
+                # Calculate reasonable defaults
                 min_val = self.data[predictor_column].min()
                 max_val = self.data[predictor_column].max()
                 n_bins = 10
@@ -751,36 +762,90 @@ class EmbezzleMainWindow(QMainWindow):
             self.max_value_spinner.blockSignals(False)
             self.intervals_spinner.blockSignals(False)
         
-        # Determine the data to use for visualization
-        viz_data = None
-        if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None:
-            viz_data = self.model_builder.training_data.copy()
-            
-            # If we have model predictions, make sure they are in the viz_data
-            if '_predicted' in self.data.columns:
-                viz_data['_predicted'] = self.data['_predicted']
-            
-            # Check for predictor-specific prediction column
-            pred_col = f'_predicted_{predictor_column}'
-            if pred_col in self.data.columns:
-                viz_data[pred_col] = self.data[pred_col]
+        # Determine the data to use for visualization - prioritize predictor_data over training_data
+        if hasattr(self.model_builder, 'predictor_data') and self.model_builder.predictor_data is not None:
+            viz_data = self.model_builder.predictor_data.copy()
+            viz_weights = self.model_builder.predictor_weights if hasattr(self.model_builder, 'predictor_weights') else None
+            data_source = "predictor_data"
+            logger.info(f"Using predictor_data for chart with {len(viz_data)} rows")
+            logger.debug(f"predictor_data columns: {list(viz_data.columns)}")
         else:
-            viz_data = self.data
+            # If no filtered data available, use the full dataset
+            viz_data = self.data.copy()
+            viz_weights = self.model_builder.weights if hasattr(self.model_builder, 'weights') else None
+            data_source = "full_data"
+            logger.info(f"Using full dataset for chart with {len(viz_data)} rows")
+            logger.debug(f"full_data columns: {list(viz_data.columns)}")
+        
+        # Add model predictions if we have a fitted model
+        if hasattr(self.model_builder, 'results') and self.model_builder.results is not None:
+            try:
+                logger.info("Adding model predictions to visualization data")
+                predictions = self.model_builder.predict()
+                if len(predictions) == len(viz_data):
+                    viz_data['_predicted'] = predictions
+                    logger.info(f"Added {len(predictions)} predictions to visualization data")
+                else:
+                    logger.warning(f"Prediction length ({len(predictions)}) doesn't match data length ({len(viz_data)})")
+            except Exception as e:
+                logger.error(f"Error adding predictions to visualization data: {str(e)}")
+        
+        # Log weight information
+        if viz_weights is not None:
+            weight_type = type(viz_weights).__name__
+            weight_len = len(viz_weights) if hasattr(viz_weights, '__len__') else 'unknown'
+            logger.info(f"Visualization weights: {weight_type}, length: {weight_len}")
+        else:
+            logger.info("No visualization weights available")
+                 
+        # Add a label to show which data source is being used
+        if hasattr(self, 'data_source_label'):
+            self.data_source_label.setText(f"Data Source: {data_source.replace('_', ' ').title()}")
+        else:
+            self.data_source_label = QLabel(f"Data Source: {data_source.replace('_', ' ').title()}")
+            self.data_source_label.setStyleSheet("font-style: italic; color: #666;")
+            self.top_right_panel.layout().insertWidget(0, self.data_source_label)
             
-        # Create the dual-axis chart
+        # Get custom binning parameters if available
+        custom_bins = None
+        if pd.api.types.is_numeric_dtype(self.data[predictor_column]):
+            # Get the min/max/intervals from the spinners
+            min_val = self.min_value_spinner.value()
+            max_val = self.max_value_spinner.value()
+            n_bins = self.intervals_spinner.value()
+            
+            # Only use custom bins if they make sense
+            if min_val < max_val and n_bins > 1:
+                custom_bins = {'min': min_val, 'max': max_val, 'n_bins': n_bins}
+                logger.info(f"Using custom binning for chart: min={min_val}, max={max_val}, bins={n_bins}")
+                
+        # Create the dual-axis chart with explicit weights argument
+        logger.info(f"Creating chart with predictor={predictor_column}, response={response}")
         self.chart_canvas.create_dual_axis_chart(
-            data=viz_data,
-            predictor=predictor_column,
+            data=viz_data, 
+            predictor=predictor_column, 
             response=response,
-            weights=weights,
+            weights=viz_weights,  # Pass weights directly as numpy array if available
             custom_bins=custom_bins
         )
         
-        # Update the levels table
+        # Update parameter statistics for this predictor
+        self.update_parameter_stats(predictor_column)
+        
+        # Update levels table for this predictor
         self.update_levels_table(predictor_column, response, weights)
         
-        # Update parameter statistics
-        self.update_parameter_stats(predictor_column)
+        # Store the selected predictor for reference
+        self.predictors_sidebar.selected_predictor = predictor_column
+            
+        # Get weights column if specified
+        weights = self.model_specs.get('weight_column')
+        
+        # Determine if the predictor is continuous
+        is_continuous = pd.api.types.is_numeric_dtype(self.data[predictor_column])
+        
+        # Show or hide continuous controls depending on predictor type
+        self.continuous_controls.setVisible(is_continuous)
     
     def update_parameter_stats(self, predictor_column):
         """
@@ -920,9 +985,10 @@ class EmbezzleMainWindow(QMainWindow):
                     })
             
             # Debug: Print to console what we found
-            print(f"Found {len(continuous_terms)} terms for {predictor_column}:")
+            logger = logging.getLogger(__name__)
+            logger.debug(f"Found {len(continuous_terms)} terms for {predictor_column}:")
             for term in continuous_terms:
-                print(f"  {term['term']} ({term['param_name']}): {term['value']:.4f}")
+                logger.debug(f"  {term['term']} ({term['param_name']}): {term['value']:.4f}")
             
             # Sort terms by power (Linear first, then Quadratic, Cubic, etc.)
             term_order = {'Linear': 1, 'Quadratic': 2, 'Cubic': 3}
@@ -1034,184 +1100,153 @@ class EmbezzleMainWindow(QMainWindow):
         weights : str, optional
             The name of the weights column
         """
-        # Use training_data if available, otherwise use original data
-        data_to_use = None
-        if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None:
-            data_to_use = self.model_builder.training_data.copy()
-            
-            # If we have model predictions, make sure they are in the viz_data
-            if '_predicted' in self.data.columns:
-                data_to_use['_predicted'] = self.data['_predicted']
-            
-            # Check for predictor-specific prediction column
-            pred_col = f'_predicted_{predictor_column}'
-            if pred_col in self.data.columns:
-                data_to_use[pred_col] = self.data[pred_col]
-        else:
-            data_to_use = self.data
-            
-        if data_to_use is None or predictor_column not in data_to_use.columns:
-            self.levels_table.setRowCount(0)
+        logger = logging.getLogger(__name__)
+        logger.info(f"Updating levels table for predictor: {predictor_column}")
+        
+        # Clear the current table content
+        self.levels_table.clearContents()
+        self.levels_table.setRowCount(0)
+        
+        # Make sure we have valid data and columns
+        if (self.data is None or 
+            predictor_column not in self.data.columns or 
+            response not in self.data.columns):
+            logger.warning(f"Missing required data or columns for levels table")
             return
         
-        # Determine if the predictor is continuous
-        is_continuous = pd.api.types.is_numeric_dtype(data_to_use[predictor_column])
-        
-        # For continuous factors, use the binning from the chart
-        if is_continuous:
-            if predictor_column in self.predictor_binning_settings:
-                settings = self.predictor_binning_settings[predictor_column]
-                min_val = settings['min']
-                max_val = settings['max']
-                n_bins = settings['n_bins']
-                
-                # Create bins
-                bins = pd.cut(
-                    data_to_use[predictor_column],
-                    bins=np.linspace(min_val, max_val, n_bins + 1),
-                    include_lowest=True
-                )
-                
-                # Group by bins
-                if weights is not None and weights in data_to_use.columns:
-                    grouped = data_to_use.groupby(bins, observed=False).agg({
-                        response: ['count', 'sum', 'mean'],
-                        weights: 'sum'
-                    })
-                else:
-                    grouped = data_to_use.groupby(bins, observed=False).agg({
-                        response: ['count', 'sum', 'mean']
-                    })
-                    grouped[(weights if weights else 'weight'), 'sum'] = grouped[(response, 'count')]
-                
-                # Set number of rows in table
-                self.levels_table.setRowCount(len(grouped))
-                
-                # Fill the table
-                for i, (bin_label, group_data) in enumerate(grouped.iterrows()):
-                    # Get the center of this bin for parameter calculation
-                    bin_edges = str(bin_label).strip('()[]').split(',')
-                    try:
-                        left_edge = float(bin_edges[0])
-                        right_edge = float(bin_edges[1])
-                        bin_center = (left_edge + right_edge) / 2
-                    except (ValueError, IndexError):
-                        bin_center = 0
-                        
-                    # Level (bin range)
-                    level_item = QTableWidgetItem(str(bin_label))
-                    self.levels_table.setItem(i, 0, level_item)
-                    
-                    # Observations count
-                    obs_item = QTableWidgetItem(str(int(group_data[(response, 'count')])))
-                    self.levels_table.setItem(i, 1, obs_item)
-                    
-                    # Weight sum
-                    weight_item = QTableWidgetItem(f"{group_data[(weights if weights else 'weight'), 'sum']:.2f}")
-                    self.levels_table.setItem(i, 2, weight_item)
-                    
-                    # Response sum
-                    response_item = QTableWidgetItem(f"{group_data[(response, 'sum')]:.2f}")
-                    self.levels_table.setItem(i, 3, response_item)
+        # Always use training_data as first choice for the levels table
+        if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None:
+            data = self.model_builder.training_data
+            data_weights = self.model_builder.training_weights if hasattr(self.model_builder, 'training_weights') else None
+            data_source = "training_data"
+            logger.info(f"Using training_data for levels table with {len(data)} rows")
+        elif hasattr(self.model_builder, 'filtered_data') and self.model_builder.filtered_data is not None:
+            data = self.model_builder.filtered_data
+            data_weights = self.model_builder.filtered_weights if hasattr(self.model_builder, 'filtered_weights') else None
+            data_source = "filtered_data"
+            logger.info(f"Using filtered_data for levels table with {len(data)} rows")
         else:
-            # For categorical factors, group by the factor values directly
-            if weights is not None and weights in data_to_use.columns:
-                grouped = data_to_use.groupby(predictor_column, observed=False).agg({
-                    response: ['count', 'sum', 'mean'],
-                    weights: 'sum'
-                })
+            # If no filtered data available, use the full dataset
+            data = self.data
+            data_weights = self.model_builder.weights if hasattr(self.model_builder, 'weights') else None
+            data_source = "full_data"
+            logger.info(f"Using full dataset for levels table with {len(data)} rows")
+        
+        # Log information about weights being used
+        if data_weights is not None:
+            weight_type = type(data_weights).__name__
+            weight_len = len(data_weights) if hasattr(data_weights, '__len__') else 'unknown'
+            logger.info(f"Data weights: {weight_type}, {weight_len}")
+        else:
+            logger.info("No data weights available for levels table")
+            
+        # Update label to show data source
+        if hasattr(self, 'data_source_label'):
+            self.data_source_label.setText(f"Data Source: {data_source.replace('_', ' ').title()}")
+        
+        # Check if column is numeric
+        is_numeric = pd.api.types.is_numeric_dtype(data[predictor_column])
+        
+        # Create levels based on column type
+        if is_numeric:
+            # Get binning settings from custom spinner values
+            min_val = self.min_value_spinner.value()
+            max_val = self.max_value_spinner.value()
+            n_bins = self.intervals_spinner.value()
+            
+            # Create bins
+            bins = pd.cut(data[predictor_column], 
+                        bins=np.linspace(min_val, max_val, n_bins + 1),
+                        include_lowest=True)
+            
+            if weights is not None and weights in data.columns:
+                # Calculate counts weighted by weight column
+                level_groups = data.groupby(bins)
+                bin_counts = level_groups[weights].sum()
+                bin_response = level_groups[response].sum() / level_groups[weights].sum()
+            elif data_weights is not None and len(data_weights) == len(data):
+                # Use the filtered weights directly
+                temp_df = data.copy()
+                temp_df['_weights'] = data_weights
+                level_groups = temp_df.groupby(bins)
+                bin_counts = level_groups['_weights'].sum()
+                bin_response = level_groups[response].sum() / level_groups['_weights'].sum()
             else:
-                grouped = data_to_use.groupby(predictor_column, observed=False).agg({
-                    response: ['count', 'sum', 'mean']
-                })
-                grouped[(weights if weights else 'weight'), 'sum'] = grouped[(response, 'count')]
+                # Calculate counts without weights
+                level_groups = data.groupby(bins)
+                bin_counts = level_groups.size()
+                bin_response = level_groups[response].mean()
             
-            # Set number of rows in table
-            self.levels_table.setRowCount(len(grouped))
+            # Convert bins to strings for table
+            levels = [str(b) for b in bin_counts.index]
+        else:
+            # For categorical variables, group by unique values
+            if weights is not None and weights in data.columns:
+                # Calculate counts weighted by weight column
+                level_groups = data.groupby(predictor_column)
+                bin_counts = level_groups[weights].sum()
+                bin_response = level_groups[response].sum() / level_groups[weights].sum()
+            elif data_weights is not None and len(data_weights) == len(data):
+                # Use the filtered weights directly
+                temp_df = data.copy()
+                temp_df['_weights'] = data_weights
+                level_groups = temp_df.groupby(predictor_column)
+                bin_counts = level_groups['_weights'].sum()
+                bin_response = level_groups[response].sum() / level_groups['_weights'].sum()
+            else:
+                # Calculate counts without weights
+                level_groups = data.groupby(predictor_column)
+                bin_counts = level_groups.size()
+                bin_response = level_groups[response].mean()
             
-            # Fill the table
-            for i, (level, group_data) in enumerate(grouped.iterrows()):
-                # Level (category value)
-                level_item = QTableWidgetItem(str(level))
-                self.levels_table.setItem(i, 0, level_item)
+            # Convert to strings for consistency
+            levels = [str(l) for l in bin_counts.index]
+        
+        # Set up table with the correct number of rows
+        self.levels_table.setRowCount(len(levels))
+        
+        # Fill the table
+        for row, level in enumerate(levels):
+            # Level name
+            level_item = QTableWidgetItem(level)
+            self.levels_table.setItem(row, 0, level_item)
+            
+            # Number of observations
+            count = bin_counts.iloc[row]
+            count_item = QTableWidgetItem(f"{count:.0f}")
+            self.levels_table.setItem(row, 1, count_item)
+            
+            # Weight (only if we have weights)
+            if weights is not None or data_weights is not None:
+                weight_item = QTableWidgetItem(f"{count:.2f}")
+                self.levels_table.setItem(row, 2, weight_item)
+            else:
+                self.levels_table.setItem(row, 2, QTableWidgetItem("-"))
+            
+            # Response
+            if row < len(bin_response):
+                resp_value = bin_response.iloc[row]
+                resp_item = QTableWidgetItem(f"{resp_value:.4f}")
+                self.levels_table.setItem(row, 3, resp_item)
                 
-                # Observations count
-                obs_item = QTableWidgetItem(str(int(group_data[(response, 'count')])))
-                self.levels_table.setItem(i, 1, obs_item)
-                
-                # Weight sum
-                weight_item = QTableWidgetItem(f"{group_data[(weights if weights else 'weight'), 'sum']:.2f}")
-                self.levels_table.setItem(i, 2, weight_item)
-                
-                # Response sum
-                response_item = QTableWidgetItem(f"{group_data[(response, 'sum')]:.2f}")
-                self.levels_table.setItem(i, 3, response_item)
+        # Resize columns to content
+        self.levels_table.resizeColumnsToContents()
     
     def update_chart_with_new_ranges(self):
         """Update the chart using the custom ranges specified in the spinners"""
-        if not hasattr(self, 'data') or self.data is None:
-            return
-            
-        # Get the currently selected predictor
-        predictor_column = self.predictors_sidebar.selected_predictor
-        
-        # Use training_data if available, otherwise use original data
-        data_to_use = None
-        if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None:
-            data_to_use = self.model_builder.training_data.copy()
-            
-            # If we have model predictions, make sure they are in the viz_data
-            if '_predicted' in self.data.columns:
-                data_to_use['_predicted'] = self.data['_predicted']
-            
-            # Check for predictor-specific prediction column
-            pred_col = f'_predicted_{predictor_column}'
-            if pred_col in self.data.columns:
-                data_to_use[pred_col] = self.data[pred_col]
-        else:
-            data_to_use = self.data
-            
-        # Skip if predictor is not continuous
-        if not pd.api.types.is_numeric_dtype(data_to_use[predictor_column]):
-            return
-            
-        # Get response variable from model specs
-        response = self.model_specs.get('response_variable')
-        if not response:
-            return
-        
-        # Get weights column if specified
-        weights = self.model_specs.get('weight_column')
-        
-        # Get custom bin specifications
-        min_val = self.min_value_spinner.value()
-        max_val = self.max_value_spinner.value()
-        n_bins = self.intervals_spinner.value()
-        
-        # Validate values
-        if min_val >= max_val:
-            # Silent fail, don't update the chart
-            return
-            
-        # Create custom bins specification
-        custom_bins = {
-            'min': min_val,
-            'max': max_val,
-            'n_bins': n_bins
-        }
-        
-        # Save these settings for this predictor
-        self.predictor_binning_settings[predictor_column] = custom_bins
-        
-        # Update the chart with custom bins
-        self.chart_canvas.create_dual_axis_chart(
-            data=data_to_use,
-            predictor=predictor_column,
-            response=response,
-            weights=weights,
-            custom_bins=custom_bins
-        )
-
+        if hasattr(self.predictors_sidebar, 'selected_predictor'):
+            predictor = self.predictors_sidebar.selected_predictor
+            if predictor:
+                # Save the current custom settings
+                self.predictor_binning_settings[predictor] = {
+                    'min': self.min_value_spinner.value(),
+                    'max': self.max_value_spinner.value(),
+                    'n_bins': self.intervals_spinner.value()
+                }
+                
+                # Call the chart update
+                self.update_predictor_chart(predictor)
+    
     def _save_model(self):
         """Save the current model to a file"""
         if not hasattr(self.model_builder, 'results') or self.model_builder.results is None:
@@ -1337,12 +1372,86 @@ class EmbezzleMainWindow(QMainWindow):
                 QMessageBox.critical(self, "Error", f"Failed to load model: {str(e)}")
                 self.statusBar.showMessage("Error loading model")
 
+    def update_prediction_data(self):
+        """Update the model builder's prediction data based on the selected prediction set"""
+        logger = logging.getLogger(__name__)
+        logger.debug("update_prediction_data method called")
+        
+        # Check if we have data and model specs
+        if self.data is not None and self.model_specs is not None:
+            logger.debug("Data and model specs are available")
+            
+            # Get the split column from model specs
+            split_column = self.model_specs.get('split_column')
+            if split_column:
+                logger.debug(f"Split column from model_specs: {split_column}")
+                
+                try:
+                    # Get the selected prediction set from sidebar
+                    prediction_partition = self.predictors_sidebar.get_selected_prediction_set()
+                    logger.debug(f"Selected prediction partition: {prediction_partition}")
+                    
+                    # Convert None to 'all' for the set_prediction_data method
+                    if prediction_partition is None:
+                        prediction_partition = 'all'
+                        logger.debug("Converted None to 'all' for prediction partition")
+                    
+                    # Update the prediction data in the model builder
+                    logger.debug(f"Calling model_builder.set_prediction_data({split_column}, {prediction_partition})")
+                    self.model_builder.set_prediction_data(split_column, prediction_partition)
+                    
+                    # Update status bar message
+                    if prediction_partition == 'all':
+                        self.statusBar.showMessage(f"Using all data for predictions")
+                    else:
+                        self.statusBar.showMessage(f"Using data filtered by {split_column}={prediction_partition} for predictions")
+                    
+                    # If we have a fitted model, update visualizations
+                    if hasattr(self.predictors_sidebar, 'selected_predictor'):
+                        predictor = self.predictors_sidebar.selected_predictor
+                        if predictor:
+                            logger.debug(f"Updating chart for predictor: {predictor}")
+                            
+                            # Force refresh the chart with the new prediction data
+                            self.update_predictor_chart(predictor)
+                            
+                            # Get the response variable to update the levels table
+                            response = self.model_specs.get('response_variable')
+                            weights = self.model_specs.get('weight_column')
+                            
+                            # Force refresh the levels table with the new prediction data
+                            if response:
+                                logger.debug(f"Updating levels table for predictor: {predictor}")
+                                self.update_levels_table(predictor, response, weights)
+                except Exception as e:
+                    self.statusBar.showMessage(f"Error setting prediction data: {str(e)}")
+                    logger.error(f"Prediction data error: {str(e)}")
+            else:
+                logger.debug("No split column specified in model_specs")
+        else:
+            logger.debug("Data or model_specs is None")
+
 
 def run_app():
-    """Run the Embezzle application"""
+    """
+    Run the Embezzle application
+    """
+    # Configure logging
+    log_format = '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+    logging.basicConfig(
+        level=logging.DEBUG,
+        format=log_format,
+        handlers=[
+            logging.StreamHandler()  # Log to console
+        ]
+    )
+    logger = logging.getLogger(__name__)
+    logger.info("Starting Embezzle application")
+    
+    # Create the application
     app = QApplication(sys.argv)
-    window = EmbezzleMainWindow()
-    window.show()
+    main_window = EmbezzleMainWindow()
+    main_window.show()
     sys.exit(app.exec())
 
 

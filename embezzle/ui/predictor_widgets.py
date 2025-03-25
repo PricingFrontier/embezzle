@@ -12,7 +12,10 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction
+import logging
 
+# Configure logging
+logger = logging.getLogger(__name__)
 
 class PredictorItem(QWidget):
     """Widget for a predictor item with expandable options"""
@@ -133,6 +136,9 @@ class PredictorsSidebar(QWidget):
         self.prediction_set_combo = QComboBox()
         self.prediction_set_combo.addItem("All")
         form_layout.addRow("Prediction Set:", self.prediction_set_combo)
+        
+        # Connect the prediction set combo box to the handler
+        self.prediction_set_combo.currentIndexChanged.connect(self.on_prediction_set_changed)
         
         # Add the form layout to the main layout
         layout.addLayout(form_layout)
@@ -297,3 +303,21 @@ class PredictorsSidebar(QWidget):
         """Get the currently selected prediction set"""
         prediction_set = self.prediction_set_combo.currentText()
         return None if prediction_set == "All" else prediction_set
+
+    def on_prediction_set_changed(self, index):
+        """Handle changes in the prediction set dropdown"""
+        # Add debug prints to track when this method is called
+        logger.debug(f"Prediction set changed to index: {index}")
+        logger.debug(f"Prediction set text: {self.prediction_set_combo.currentText()}")
+        
+        # Signal to the parent that the prediction set has changed
+        # First try using the direct reference to main window
+        if hasattr(self, 'mainwindow_reference') and hasattr(self.mainwindow_reference, 'update_prediction_data'):
+            logger.debug(f"Calling mainwindow_reference.update_prediction_data method")
+            self.mainwindow_reference.update_prediction_data()
+        # Fall back to parent method if direct reference not available
+        elif hasattr(self.parent(), 'update_prediction_data'):
+            logger.debug(f"Calling parent's update_prediction_data method")
+            self.parent().update_prediction_data()
+        else:
+            logger.warning(f"No way to access update_prediction_data method")

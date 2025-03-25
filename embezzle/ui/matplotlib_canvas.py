@@ -11,7 +11,10 @@ from matplotlib.figure import Figure
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
+import logging
 
+# Configure logging
+logger = logging.getLogger(__name__)
 
 class MatplotlibCanvas(FigureCanvas):
     """Matplotlib canvas for embedding plots in PyQt widgets"""
@@ -54,8 +57,8 @@ class MatplotlibCanvas(FigureCanvas):
             The predictor column name to use as x-axis
         response : str
             The response column name for the line chart
-        weights : str, optional
-            The weights column name for weighted counts
+        weights : str or numpy.ndarray, optional
+            The weights column name or array for weighted counts
         custom_bins : dict, optional
             Dictionary with custom binning parameters:
             - min: minimum value for binning
@@ -65,7 +68,39 @@ class MatplotlibCanvas(FigureCanvas):
         # Clear previous plot
         self.clear_plot()
         
+        # Log the data source information
+        logger.info(f"Creating chart with {len(data)} rows of data for predictor: {predictor}, response: {response}")
+        
+        # Handle weights properly - could be a column name (str) or numpy array
+        weight_column = None
+        if isinstance(weights, np.ndarray):
+            logger.info(f"Using numpy array weights with length: {len(weights)}")
+            # If weights is a numpy array, we'll create a temporary column
+            weight_column = '_temp_weights'
+            temp_data = data.copy()
+            if len(weights) == len(data):
+                temp_data[weight_column] = weights
+                logger.info(f"Added temporary weights column '{weight_column}' to data")
+                data = temp_data
+            else:
+                logger.warning(f"Weights array length ({len(weights)}) doesn't match data length ({len(data)}). Ignoring weights.")
+                weight_column = None
+        elif isinstance(weights, str):
+            if weights in data.columns:
+                logger.info(f"Using weights column: {weights}")
+                weight_column = weights
+            else:
+                logger.warning(f"Weights column '{weights}' not found in data. Ignoring weights.")
+                weight_column = None
+        else:
+            logger.info("No weights specified for chart")
+            
+        # Log custom binning information
+        if custom_bins is not None:
+            logger.info(f"Using custom bins: min={custom_bins.get('min')}, max={custom_bins.get('max')}, bins={custom_bins.get('n_bins')}")
+        
         if predictor not in data.columns or response not in data.columns:
+            logger.warning(f"Missing required columns in data: predictor={predictor in data.columns}, response={response in data.columns}")
             return
             
         # Check if the predictor is numeric or categorical
@@ -81,28 +116,31 @@ class MatplotlibCanvas(FigureCanvas):
                 bins = pd.cut(data[predictor], 
                               bins=np.linspace(min_val, max_val, n_bins + 1),
                               include_lowest=True)
+                logger.debug(f"Created {n_bins} custom bins from {min_val} to {max_val}")
             else:
                 # Use default binning
                 n_bins = min(10, len(data[predictor].unique()))
                 bins = pd.cut(data[predictor], bins=n_bins)
+                logger.debug(f"Created {n_bins} automatic bins")
             
             # Group by bins
-            if weights is not None and weights in data.columns:
-                # Use weights for counts and to calculate weighted response
+            if weight_column is not None:
+                # Log that we're using weights
+                logger.info(f"Grouping numeric data with weights from {weight_column}")
                 agg_dict = {response: ['count']}
                 if response in data.columns:
                     agg_dict[response].append('sum')
-                agg_dict[weights] = 'sum'
+                agg_dict[weight_column] = 'sum'
                 
                 grouped = data.groupby(bins, observed=False).agg(agg_dict)
                 
                 # Calculate weighted average (sum of response / sum of weights) if both columns exist
-                if (response, 'sum') in grouped.columns and (weights, 'sum') in grouped.columns:
+                if (response, 'sum') in grouped.columns and (weight_column, 'sum') in grouped.columns:
                     # Handle division by zero and NaN values
-                    weights_sum = grouped[weights, 'sum'].replace(0, np.nan)
+                    weights_sum = grouped[weight_column, 'sum'].replace(0, np.nan)
                     grouped[response, 'weighted_avg'] = grouped[response, 'sum'].div(weights_sum)
                 
-                count_column = (weights, 'sum')
+                count_column = (weight_column, 'sum')
             else:
                 # Use counts for unweighted data
                 agg_dict = {response: ['count']}
@@ -123,22 +161,23 @@ class MatplotlibCanvas(FigureCanvas):
             
         else:
             # For categorical predictors, group directly
-            if weights is not None and weights in data.columns:
-                # Use weights for counts and to calculate weighted response
+            if weight_column is not None:
+                # Log that we're using weights
+                logger.info(f"Grouping categorical data with weights from {weight_column}")
                 agg_dict = {response: ['count']}
                 if response in data.columns:
                     agg_dict[response].append('sum')
-                agg_dict[weights] = 'sum'
+                agg_dict[weight_column] = 'sum'
                 
                 grouped = data.groupby(predictor, observed=False).agg(agg_dict)
                 
                 # Calculate weighted average (sum of response / sum of weights) if both columns exist
-                if (response, 'sum') in grouped.columns and (weights, 'sum') in grouped.columns:
+                if (response, 'sum') in grouped.columns and (weight_column, 'sum') in grouped.columns:
                     # Handle division by zero and NaN values
-                    weights_sum = grouped[weights, 'sum'].replace(0, np.nan)
+                    weights_sum = grouped[weight_column, 'sum'].replace(0, np.nan)
                     grouped[response, 'weighted_avg'] = grouped[response, 'sum'].div(weights_sum)
                 
-                count_column = (weights, 'sum')
+                count_column = (weight_column, 'sum')
             else:
                 # Use counts for unweighted data
                 agg_dict = {response: ['count']}
@@ -189,7 +228,18 @@ class MatplotlibCanvas(FigureCanvas):
         scaled_counts = count_values * scale_factor * 0.5  # Scale to approximately half the response height
         
         # Plot bars in the background
-        self.axes.bar(bar_positions, scaled_counts, color='yellow', edgecolor='black', alpha=0.7, zorder=1)
+        bars = self.axes.bar(bar_positions, scaled_counts, color='yellow', edgecolor='black', alpha=0.7, zorder=1)
+        
+        # Add count labels above each bar
+        for i, (count, bar) in enumerate(zip(count_values, bars)):
+            if not pd.isna(count) and count > 0:
+                # Format count as integer if it's whole number, otherwise with 1 decimal place
+                count_label = f'{int(count):,}' if count.is_integer() else f'{count:.1f}'
+                self.axes.annotate(count_label, 
+                    xy=(bar.get_x() + bar.get_width()/2, bar.get_height()), 
+                    xytext=(0, 3), textcoords='offset points',
+                    ha='center', va='bottom', fontsize=8, color='black',
+                    zorder=4)  # Higher than bars, lower than line
         
         # Plot means on top of bars
         self.axes.plot(bar_positions, response_values, color='purple', marker='o', linewidth=2, zorder=5)
@@ -206,13 +256,13 @@ class MatplotlibCanvas(FigureCanvas):
         if '_predicted' in data.columns:
             # Calculate weighted prediction per bin using the same approach as for response
             if pd.api.types.is_numeric_dtype(data[predictor]):
-                if weights is not None and weights in data.columns:
+                if weight_column is not None:
                     pred_grouped = data.groupby(bins, observed=False).agg({
                         '_predicted': ['sum'],
-                        weights: 'sum'
+                        weight_column: 'sum'
                     })
                     # Calculate weighted average for predictions (sum of predicted / sum of weights)
-                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted', 'sum'] / pred_grouped[weights, 'sum']
+                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted', 'sum'] / pred_grouped[weight_column, 'sum']
                 else:
                     pred_grouped = data.groupby(bins, observed=False).agg({
                         '_predicted': ['sum', 'count']
@@ -220,13 +270,13 @@ class MatplotlibCanvas(FigureCanvas):
                     # Calculate simple average for predictions
                     pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted', 'sum'] / pred_grouped['_predicted', 'count']
             else:
-                if weights is not None and weights in data.columns:
+                if weight_column is not None:
                     pred_grouped = data.groupby(predictor, observed=False).agg({
                         '_predicted': ['sum'],
-                        weights: 'sum'
+                        weight_column: 'sum'
                     })
                     # Calculate weighted average for predictions (sum of predicted / sum of weights)
-                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted', 'sum'] / pred_grouped[weights, 'sum']
+                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted', 'sum'] / pred_grouped[weight_column, 'sum']
                 else:
                     pred_grouped = data.groupby(predictor, observed=False).agg({
                         '_predicted': ['sum', 'count']
@@ -250,15 +300,16 @@ class MatplotlibCanvas(FigureCanvas):
         # Check for predictor-specific prediction column
         predictor_specific_col = f'_predicted_{predictor}'
         if predictor_specific_col in data.columns:
+            logger.info(f"Found predictor-specific prediction column: {predictor_specific_col}")
             # Calculate weighted prediction per bin using the same approach as for response
             if pd.api.types.is_numeric_dtype(data[predictor]):
-                if weights is not None and weights in data.columns:
+                if weight_column is not None:
                     pred_specific_grouped = data.groupby(bins, observed=False).agg({
                         predictor_specific_col: ['sum'],
-                        weights: 'sum'
+                        weight_column: 'sum'
                     })
                     # Calculate weighted average for predictions (sum of predicted / sum of weights)
-                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[predictor_specific_col, 'sum'] / pred_specific_grouped[weights, 'sum']
+                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[predictor_specific_col, 'sum'] / pred_specific_grouped[weight_column, 'sum']
                 else:
                     pred_specific_grouped = data.groupby(bins, observed=False).agg({
                         predictor_specific_col: ['sum', 'count']
@@ -266,13 +317,13 @@ class MatplotlibCanvas(FigureCanvas):
                     # Calculate simple average for predictions
                     pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[predictor_specific_col, 'sum'] / pred_specific_grouped[predictor_specific_col, 'count']
             else:
-                if weights is not None and weights in data.columns:
+                if weight_column is not None:
                     pred_specific_grouped = data.groupby(predictor, observed=False).agg({
                         predictor_specific_col: ['sum'],
-                        weights: 'sum'
+                        weight_column: 'sum'
                     })
                     # Calculate weighted average for predictions (sum of predicted / sum of weights)
-                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[predictor_specific_col, 'sum'] / pred_specific_grouped[weights, 'sum']
+                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[predictor_specific_col, 'sum'] / pred_specific_grouped[weight_column, 'sum']
                 else:
                     pred_specific_grouped = data.groupby(predictor, observed=False).agg({
                         predictor_specific_col: ['sum', 'count']
