@@ -254,35 +254,52 @@ class MatplotlibCanvas(FigureCanvas):
         
         # Add model predictions if available
         if '_predicted' in data.columns:
+            logging.getLogger(__name__).info("Processing model predictions for chart")
             # Calculate weighted prediction per bin using the same approach as for response
             if pd.api.types.is_numeric_dtype(data[predictor]):
                 if weight_column is not None:
+                    # For insurance frequency models, we need to sum the predictions and divide by sum of weights
+                    # Predictions from the model are already frequency per unit exposure, so we multiply by exposure
+                    # before grouping to get total predicted claims
+                    data['_predicted_total'] = data['_predicted'] * data[weight_column]
+                    
                     pred_grouped = data.groupby(bins, observed=False).agg({
-                        '_predicted': ['sum'],
+                        '_predicted_total': ['sum'],
                         weight_column: 'sum'
                     })
-                    # Calculate weighted average for predictions (sum of predicted / sum of weights)
-                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted', 'sum'] / pred_grouped[weight_column, 'sum']
+                    
+                    # Calculate frequency as sum(predicted_total) / sum(weights)
+                    # This matches how response values are calculated: sum(claims) / sum(exposure)
+                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted_total', 'sum'] / pred_grouped[weight_column, 'sum']
+                    logging.getLogger(__name__).info(f"Using frequency-based predictions (sum(pred*weight)/sum(weights)) for chart")
                 else:
                     pred_grouped = data.groupby(bins, observed=False).agg({
-                        '_predicted': ['sum', 'count']
+                        '_predicted': ['mean', 'count']
                     })
-                    # Calculate simple average for predictions
-                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted', 'sum'] / pred_grouped['_predicted', 'count']
+                    # If no weights, use the mean
+                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted', 'mean']
+                    logging.getLogger(__name__).info(f"Using mean-based predictions for chart (no weights available)")
             else:
                 if weight_column is not None:
+                    # Same approach for categorical predictors
+                    # Multiply predictions by weights to get total predicted claims
+                    data['_predicted_total'] = data['_predicted'] * data[weight_column]
+                    
                     pred_grouped = data.groupby(predictor, observed=False).agg({
-                        '_predicted': ['sum'],
+                        '_predicted_total': ['sum'],
                         weight_column: 'sum'
                     })
-                    # Calculate weighted average for predictions (sum of predicted / sum of weights)
-                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted', 'sum'] / pred_grouped[weight_column, 'sum']
+                    
+                    # Calculate frequency as sum(predicted_total) / sum(weights)
+                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted_total', 'sum'] / pred_grouped[weight_column, 'sum']
+                    logging.getLogger(__name__).info(f"Using frequency-based predictions (sum(pred*weight)/sum(weights)) for chart")
                 else:
                     pred_grouped = data.groupby(predictor, observed=False).agg({
-                        '_predicted': ['sum', 'count']
+                        '_predicted': ['mean', 'count']
                     })
-                    # Calculate simple average for predictions
-                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted', 'sum'] / pred_grouped['_predicted', 'count']
+                    # If no weights, use the mean
+                    pred_grouped['_predicted', 'weighted_avg'] = pred_grouped['_predicted', 'mean']
+                    logging.getLogger(__name__).info(f"Using mean-based predictions for chart (no weights available)")
             
             # Use weighted average for predictions
             self.axes.plot(bar_positions, pred_grouped['_predicted', 'weighted_avg'], 
@@ -304,32 +321,48 @@ class MatplotlibCanvas(FigureCanvas):
             # Calculate weighted prediction per bin using the same approach as for response
             if pd.api.types.is_numeric_dtype(data[predictor]):
                 if weight_column is not None:
+                    # For insurance frequency models, we need to sum the predictions and divide by sum of weights
+                    # Predictions from the model are already frequency per unit exposure, so we multiply by exposure
+                    # before grouping to get total predicted claims
+                    data[f'{predictor_specific_col}_total'] = data[predictor_specific_col] * data[weight_column]
+                    
                     pred_specific_grouped = data.groupby(bins, observed=False).agg({
-                        predictor_specific_col: ['sum'],
+                        f'{predictor_specific_col}_total': ['sum'],
                         weight_column: 'sum'
                     })
-                    # Calculate weighted average for predictions (sum of predicted / sum of weights)
-                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[predictor_specific_col, 'sum'] / pred_specific_grouped[weight_column, 'sum']
+                    
+                    # Calculate frequency as sum(predicted_total) / sum(weights)
+                    # This matches how response values are calculated: sum(claims) / sum(exposure)
+                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[f'{predictor_specific_col}_total', 'sum'] / pred_specific_grouped[weight_column, 'sum']
+                    logging.getLogger(__name__).info(f"Using frequency-based predictions (sum(pred*weight)/sum(weights)) for chart")
                 else:
                     pred_specific_grouped = data.groupby(bins, observed=False).agg({
-                        predictor_specific_col: ['sum', 'count']
+                        predictor_specific_col: ['mean', 'count']
                     })
-                    # Calculate simple average for predictions
-                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[predictor_specific_col, 'sum'] / pred_specific_grouped[predictor_specific_col, 'count']
+                    # If no weights, use the mean
+                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[predictor_specific_col, 'mean']
+                    logging.getLogger(__name__).info(f"Using mean-based predictions for chart (no weights available)")
             else:
                 if weight_column is not None:
+                    # Same approach for categorical predictors
+                    # Multiply predictions by weights to get total predicted claims
+                    data[f'{predictor_specific_col}_total'] = data[predictor_specific_col] * data[weight_column]
+                    
                     pred_specific_grouped = data.groupby(predictor, observed=False).agg({
-                        predictor_specific_col: ['sum'],
+                        f'{predictor_specific_col}_total': ['sum'],
                         weight_column: 'sum'
                     })
-                    # Calculate weighted average for predictions (sum of predicted / sum of weights)
-                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[predictor_specific_col, 'sum'] / pred_specific_grouped[weight_column, 'sum']
+                    
+                    # Calculate frequency as sum(predicted_total) / sum(weights)
+                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[f'{predictor_specific_col}_total', 'sum'] / pred_specific_grouped[weight_column, 'sum']
+                    logging.getLogger(__name__).info(f"Using frequency-based predictions (sum(pred*weight)/sum(weights)) for chart")
                 else:
                     pred_specific_grouped = data.groupby(predictor, observed=False).agg({
-                        predictor_specific_col: ['sum', 'count']
+                        predictor_specific_col: ['mean', 'count']
                     })
-                    # Calculate simple average for predictions
-                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[predictor_specific_col, 'sum'] / pred_specific_grouped[predictor_specific_col, 'count']
+                    # If no weights, use the mean
+                    pred_specific_grouped[predictor_specific_col, 'weighted_avg'] = pred_specific_grouped[predictor_specific_col, 'mean']
+                    logging.getLogger(__name__).info(f"Using mean-based predictions for chart (no weights available)")
             
             # Use weighted average for predictor-specific predictions - plot as neon green line
             self.axes.plot(bar_positions, pred_specific_grouped[predictor_specific_col, 'weighted_avg'], 

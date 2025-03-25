@@ -46,6 +46,9 @@ class EmbezzleMainWindow(QMainWindow):
         # Dictionary to store binning settings for each predictor
         self.predictor_binning_settings = {}
         
+        # Dictionary to store min/max/intervals per factor
+        self.factor_ranges = {}
+        
         # Initialize menu actions
         self.open_action = None
         self.exit_action = None
@@ -735,26 +738,26 @@ class EmbezzleMainWindow(QMainWindow):
         
         # Set proper ranges for the controls if this is a numeric column
         if pd.api.types.is_numeric_dtype(self.data[predictor_column]):
-            # Get binning settings from saved dict or calculate new ones
-            if predictor_column in self.predictor_binning_settings:
-                min_val = self.predictor_binning_settings[predictor_column]['min']
-                max_val = self.predictor_binning_settings[predictor_column]['max']
-                n_bins = self.predictor_binning_settings[predictor_column]['n_bins']
+            # Get binning settings from stored or default values for this predictor
+            if predictor_column in self.factor_ranges:
+                # Use stored values
+                ranges = self.factor_ranges[predictor_column]
+                self.min_value_spinner.setValue(ranges['min'])
+                self.max_value_spinner.setValue(ranges['max'])
+                self.intervals_spinner.setValue(ranges['intervals'])
             else:
-                # Calculate reasonable defaults
+                # Default values based on data range
                 min_val = self.data[predictor_column].min()
                 max_val = self.data[predictor_column].max()
-                n_bins = 10
-                
                 self.min_value_spinner.setValue(min_val)
                 self.max_value_spinner.setValue(max_val)
-                self.intervals_spinner.setValue(n_bins)
+                self.intervals_spinner.setValue(10)  # Default 10 intervals
                 
-                # Save these initial settings
-                self.predictor_binning_settings[predictor_column] = {
+                # Store these defaults
+                self.factor_ranges[predictor_column] = {
                     'min': min_val,
                     'max': max_val,
-                    'n_bins': n_bins
+                    'intervals': 10
                 }
             
             # Unblock signals
@@ -777,28 +780,15 @@ class EmbezzleMainWindow(QMainWindow):
             logger.info(f"Using full dataset for chart with {len(viz_data)} rows")
             logger.debug(f"full_data columns: {list(viz_data.columns)}")
         
-        # Add model predictions if we have a fitted model
-        if hasattr(self.model_builder, 'results') and self.model_builder.results is not None:
-            try:
-                logger.info("Adding model predictions to visualization data")
-                predictions = self.model_builder.predict()
-                if len(predictions) == len(viz_data):
-                    viz_data['_predicted'] = predictions
-                    logger.info(f"Added {len(predictions)} predictions to visualization data")
-                else:
-                    logger.warning(f"Prediction length ({len(predictions)}) doesn't match data length ({len(viz_data)})")
-            except Exception as e:
-                logger.error(f"Error adding predictions to visualization data: {str(e)}")
-        
-        # Log weight information
+        # Log information about weights being used
         if viz_weights is not None:
             weight_type = type(viz_weights).__name__
             weight_len = len(viz_weights) if hasattr(viz_weights, '__len__') else 'unknown'
-            logger.info(f"Visualization weights: {weight_type}, length: {weight_len}")
+            logger.info(f"Data weights: {weight_type}, {weight_len}")
         else:
-            logger.info("No visualization weights available")
-                 
-        # Add a label to show which data source is being used
+            logger.info("No data weights available for levels table")
+            
+        # Update label to show data source
         if hasattr(self, 'data_source_label'):
             self.data_source_label.setText(f"Data Source: {data_source.replace('_', ' ').title()}")
         else:
@@ -806,6 +796,39 @@ class EmbezzleMainWindow(QMainWindow):
             self.data_source_label.setStyleSheet("font-style: italic; color: #666;")
             self.top_right_panel.layout().insertWidget(0, self.data_source_label)
             
+        # Add model predictions if we have a fitted model
+        if hasattr(self.model_builder, 'results') and self.model_builder.results is not None:
+            try:
+                logger.info("Adding model predictions to visualization data")
+                
+                # Get raw predictions from the model
+                predictions = self.model_builder.predict()
+                
+                if len(predictions) == len(viz_data):
+                    # For frequency models (like insurance claims), we need to consider the exposure
+                    exposure_column = self.model_specs.get('weight_column', None)
+                    model_family = getattr(self.model_builder, 'family', None)
+                    
+                    # Check if this is a frequency model (e.g., Poisson with exposure/weights)
+                    if model_family in ['poisson', 'negative_binomial', 'tweedie'] and exposure_column is not None and exposure_column in viz_data.columns:
+                        logger.info(f"Adjusting predictions for frequency model with exposure column: {exposure_column}")
+                        
+                        # The raw predictions represent claim frequency per unit exposure
+                        # For visualization, we need to ensure this is properly reflected
+                        viz_data['_predicted'] = predictions
+                        
+                        # Log for verification purposes
+                        logger.info(f"Prediction mean: {predictions.mean():.4f}, min: {predictions.min():.4f}, max: {predictions.max():.4f}")
+                    else:
+                        # For other model types, use raw predictions
+                        viz_data['_predicted'] = predictions
+                    
+                    logger.info(f"Added {len(predictions)} predictions to visualization data")
+                else:
+                    logger.warning(f"Prediction length ({len(predictions)}) doesn't match data length ({len(viz_data)})")
+            except Exception as e:
+                logger.error(f"Error adding predictions to visualization data: {str(e)}")
+        
         # Get custom binning parameters if available
         custom_bins = None
         if pd.api.types.is_numeric_dtype(self.data[predictor_column]):
@@ -814,11 +837,29 @@ class EmbezzleMainWindow(QMainWindow):
             max_val = self.max_value_spinner.value()
             n_bins = self.intervals_spinner.value()
             
-            # Only use custom bins if they make sense
-            if min_val < max_val and n_bins > 1:
-                custom_bins = {'min': min_val, 'max': max_val, 'n_bins': n_bins}
-                logger.info(f"Using custom binning for chart: min={min_val}, max={max_val}, bins={n_bins}")
-                
+            # Ensure valid binning parameters
+            if min_val >= max_val or n_bins < 2:
+                # Use default bin range based on data
+                min_val = viz_data[predictor_column].min()
+                max_val = viz_data[predictor_column].max()
+                n_bins = 10
+                logger.warning(f"Invalid binning parameters, using defaults: min={min_val}, max={max_val}, bins={n_bins}")
+            
+            # Create bins
+            bins = pd.cut(viz_data[predictor_column], 
+                        bins=np.linspace(min_val, max_val, n_bins + 1),
+                        include_lowest=True)
+            
+            # Update stored values for this predictor
+            self.factor_ranges[predictor_column] = {
+                'min': min_val,
+                'max': max_val,
+                'intervals': n_bins
+            }
+            
+            custom_bins = {'min': min_val, 'max': max_val, 'n_bins': n_bins}
+            logger.info(f"Using custom binning for chart: min={min_val}, max={max_val}, bins={n_bins}")
+        
         # Create the dual-axis chart with explicit weights argument
         logger.info(f"Creating chart with predictor={predictor_column}, response={response}")
         self.chart_canvas.create_dual_axis_chart(
@@ -1154,6 +1195,14 @@ class EmbezzleMainWindow(QMainWindow):
             max_val = self.max_value_spinner.value()
             n_bins = self.intervals_spinner.value()
             
+            # Ensure valid binning parameters
+            if min_val >= max_val or n_bins < 2:
+                # Use default bin range based on data
+                min_val = data[predictor_column].min()
+                max_val = data[predictor_column].max()
+                n_bins = 10
+                logger.warning(f"Invalid binning parameters, using defaults: min={min_val}, max={max_val}, bins={n_bins}")
+            
             # Create bins
             bins = pd.cut(data[predictor_column], 
                         bins=np.linspace(min_val, max_val, n_bins + 1),
@@ -1236,16 +1285,17 @@ class EmbezzleMainWindow(QMainWindow):
         """Update the chart using the custom ranges specified in the spinners"""
         if hasattr(self.predictors_sidebar, 'selected_predictor'):
             predictor = self.predictors_sidebar.selected_predictor
-            if predictor:
-                # Save the current custom settings
-                self.predictor_binning_settings[predictor] = {
+            
+            # Store the current values for this predictor
+            if predictor is not None:
+                self.factor_ranges[predictor] = {
                     'min': self.min_value_spinner.value(),
                     'max': self.max_value_spinner.value(),
-                    'n_bins': self.intervals_spinner.value()
+                    'intervals': self.intervals_spinner.value()
                 }
-                
-                # Call the chart update
-                self.update_predictor_chart(predictor)
+            
+            # Update the chart
+            self.update_predictor_chart(predictor)
     
     def _save_model(self):
         """Save the current model to a file"""
@@ -1427,9 +1477,7 @@ class EmbezzleMainWindow(QMainWindow):
                     self.statusBar.showMessage(f"Error setting prediction data: {str(e)}")
                     logger.error(f"Prediction data error: {str(e)}")
             else:
-                logger.debug("No split column specified in model_specs")
-        else:
-            logger.debug("Data or model_specs is None")
+                logger.debug("Data or model_specs is None")
 
 
 def run_app():
