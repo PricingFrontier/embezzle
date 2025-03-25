@@ -632,11 +632,6 @@ class EmbezzleMainWindow(QMainWindow):
             # Generate predictions
             predictions = self.model_builder.predict()
 
-            for predictor_column in self.predictors_sidebar.predictor_items.keys():
-                isolated_preds = self.model_builder.isolated_predict(predictor=predictor_column)
-                if isolated_preds is not None:
-                    self.data[f'_predicted_{predictor_column}'] = isolated_preds
-            
             # Add predictions to the data for chart updates
             self.data['_predicted'] = predictions
             
