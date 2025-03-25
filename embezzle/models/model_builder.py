@@ -38,6 +38,8 @@ class GLMBuilder:
         self.tweedie_var_power = 1.5  # Default value
         self.alpha = 1.0  # Default for power link
         self.exposure = None
+        self.training_data = None  # For filtered training data
+        self.training_weights = None  # For filtered weights
         
         # Available families and links
         self.available_families = {
@@ -497,3 +499,59 @@ class GLMBuilder:
         except Exception as e:
             print(f"Error loading model: {str(e)}")
             return False
+
+    def set_training_data(self, split_column, train_partition):
+        """
+        Create a filtered dataset for training based on split column and train partition value.
+        
+        Parameters
+        ----------
+        split_column : str
+            Column name to use for filtering data
+        train_partition : str or int or float
+            Value in the split column to filter for. Only rows where
+            split_column equals train_partition will be included in training_data.
+        
+        Returns
+        -------
+        bool
+            True if training data creation was successful, False otherwise
+        """
+        if self.data is None:
+            raise ValueError("Data must be loaded before creating training data")
+            
+        if split_column not in self.data.columns:
+            raise ValueError(f"Split column '{split_column}' not found in data")
+            
+        try:
+            # Create filtered dataset based on the split column and train partition
+            self.training_data = self.data[self.data[split_column] == train_partition].copy()
+            
+            # Create corresponding weights if weights exist
+            if self.weights is not None:
+                if isinstance(self.weights, np.ndarray):
+                    # Convert weights to Series with same index as data for proper filtering
+                    weights_series = pd.Series(self.weights, index=self.data.index)
+                    self.training_weights = weights_series.loc[self.training_data.index].values
+                elif isinstance(self.weights, pd.Series):
+                    self.training_weights = self.weights.loc[self.training_data.index].values
+                else:
+                    raise ValueError("Weights must be a numpy array or pandas Series")
+            
+            return True
+        except Exception as e:
+            print(f"Error creating training data: {str(e)}")
+            return False
+            
+    def clear_training_data(self):
+        """
+        Clear the training data and weights, reverting to using the full dataset.
+        
+        Returns
+        -------
+        bool
+            True if clearing was successful
+        """
+        self.training_data = None
+        self.training_weights = None
+        return True

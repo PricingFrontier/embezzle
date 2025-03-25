@@ -422,6 +422,7 @@ class EmbezzleMainWindow(QMainWindow):
         response_variable = self.model_specs.get('response_variable')
         weight_column = self.model_specs.get('weight_column')
         split_column = self.model_specs.get('split_column')
+        train_partition = self.model_specs.get('train_partition')
         
         # Set the response variable
         if response_variable:
@@ -436,6 +437,30 @@ class EmbezzleMainWindow(QMainWindow):
             self.statusBar.showMessage(f"Using '{split_column}' for train/test/validation splits")
             # Update the prediction set dropdown in the predictor sidebar
             self.predictors_sidebar.update_prediction_set_combo(split_column, self.data)
+            
+            # Create filtered training dataset if both split column and train partition are specified
+            if train_partition:
+                try:
+                    # Create the filtered dataset in the model builder
+                    self.model_builder.set_training_data(split_column, train_partition)
+                    self.statusBar.showMessage(f"Created training dataset filtered by {split_column}={train_partition}")
+                except Exception as e:
+                    self.statusBar.showMessage(f"Error creating training dataset: {str(e)}")
+            else:
+                # Clear any existing training data if no train partition is specified
+                self.model_builder.clear_training_data()
+                self.statusBar.showMessage(f"Using full dataset (no training partition specified)")
+        else:
+            # If no split column is specified, clear any training data to use the full dataset
+            self.model_builder.clear_training_data()
+            
+        # Update the UI with the current predictor if one is selected
+        if hasattr(self.predictors_sidebar, 'selected_predictor') and self.predictors_sidebar.selected_predictor:
+            predictor = self.predictors_sidebar.selected_predictor
+            # Update the chart visualization
+            self.update_predictor_chart(predictor)
+            # Update the levels table with the current data
+            self.update_levels_table(predictor, response_variable, weight_column)
         
         # Set family and link
         family = self.model_specs.get('family')
@@ -692,7 +717,7 @@ class EmbezzleMainWindow(QMainWindow):
         
         # Create the dual-axis chart
         self.chart_canvas.create_dual_axis_chart(
-            data=self.data,
+            data=self.model_builder.training_data if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None else self.data,
             predictor=predictor_column,
             response=response,
             weights=weights,
@@ -957,12 +982,15 @@ class EmbezzleMainWindow(QMainWindow):
         weights : str, optional
             The name of the weights column
         """
-        if self.data is None or predictor_column not in self.data.columns:
+        # Use training_data if available, otherwise use original data
+        data_to_use = self.model_builder.training_data if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None else self.data
+        
+        if data_to_use is None or predictor_column not in data_to_use.columns:
             self.levels_table.setRowCount(0)
             return
         
         # Determine if the predictor is continuous
-        is_continuous = pd.api.types.is_numeric_dtype(self.data[predictor_column])
+        is_continuous = pd.api.types.is_numeric_dtype(data_to_use[predictor_column])
         
         # For continuous factors, use the binning from the chart
         if is_continuous:
@@ -974,19 +1002,19 @@ class EmbezzleMainWindow(QMainWindow):
                 
                 # Create bins
                 bins = pd.cut(
-                    self.data[predictor_column],
+                    data_to_use[predictor_column],
                     bins=np.linspace(min_val, max_val, n_bins + 1),
                     include_lowest=True
                 )
                 
                 # Group by bins
-                if weights is not None and weights in self.data.columns:
-                    grouped = self.data.groupby(bins, observed=False).agg({
+                if weights is not None and weights in data_to_use.columns:
+                    grouped = data_to_use.groupby(bins, observed=False).agg({
                         response: ['count', 'sum', 'mean'],
                         weights: 'sum'
                     })
                 else:
-                    grouped = self.data.groupby(bins, observed=False).agg({
+                    grouped = data_to_use.groupby(bins, observed=False).agg({
                         response: ['count', 'sum', 'mean']
                     })
                     grouped[(weights if weights else 'weight'), 'sum'] = grouped[(response, 'count')]
@@ -1022,13 +1050,13 @@ class EmbezzleMainWindow(QMainWindow):
                     self.levels_table.setItem(i, 3, response_item)
         else:
             # For categorical factors, group by the factor values directly
-            if weights is not None and weights in self.data.columns:
-                grouped = self.data.groupby(predictor_column, observed=False).agg({
+            if weights is not None and weights in data_to_use.columns:
+                grouped = data_to_use.groupby(predictor_column, observed=False).agg({
                     response: ['count', 'sum', 'mean'],
                     weights: 'sum'
                 })
             else:
-                grouped = self.data.groupby(predictor_column, observed=False).agg({
+                grouped = data_to_use.groupby(predictor_column, observed=False).agg({
                     response: ['count', 'sum', 'mean']
                 })
                 grouped[(weights if weights else 'weight'), 'sum'] = grouped[(response, 'count')]
@@ -1061,8 +1089,11 @@ class EmbezzleMainWindow(QMainWindow):
             
         predictor_column = self.predictors_sidebar.selected_predictor
         
+        # Use training_data if available, otherwise use original data
+        data_to_use = self.model_builder.training_data if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None else self.data
+        
         # Skip if predictor is not continuous
-        if not pd.api.types.is_numeric_dtype(self.data[predictor_column]):
+        if not pd.api.types.is_numeric_dtype(data_to_use[predictor_column]):
             return
             
         # Get response variable from model specs
@@ -1095,7 +1126,7 @@ class EmbezzleMainWindow(QMainWindow):
         
         # Update the chart with custom bins
         self.chart_canvas.create_dual_axis_chart(
-            data=self.data,
+            data=data_to_use,
             predictor=predictor_column,
             response=response,
             weights=weights,
