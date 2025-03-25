@@ -166,6 +166,9 @@ class PredictorsSidebar(QWidget):
         self.predictor_items = {}
         self.selected_predictor = None
         
+        # Store predictor roles for persistence
+        self.predictor_roles = {}
+        
         # Signal callback for when a predictor is selected
         self.on_predictor_selected = None
         
@@ -218,15 +221,18 @@ class PredictorsSidebar(QWidget):
     def set_predictor_role(self, predictor_name, role):
         """Set the role of a predictor (factor or variate)"""
         if predictor_name in self.predictor_items:
-            item_widget = self.predictor_items[predictor_name]
-            item_widget.set_role(role)
+            # Set the visual role in the widget
+            self.predictor_items[predictor_name].set_role(role)
+            
+            # Store the role for persistence
+            self.predictor_roles[predictor_name] = role
             
             # Find the list widget item
             for i in range(self.predictors_list.count()):
                 list_item = self.predictors_list.item(i)
                 if list_item.data(Qt.ItemDataRole.UserRole) == predictor_name:
                     # Update the height of the list widget item
-                    self.predictors_list.setItemWidget(list_item, item_widget)
+                    self.predictors_list.setItemWidget(list_item, self.predictor_items[predictor_name])
                     if role == 'variate':
                         list_item.setSizeHint(QSize(list_item.sizeHint().width(), 90))
                     else:
@@ -241,17 +247,23 @@ class PredictorsSidebar(QWidget):
         if excluded_columns is None:
             excluded_columns = []
             
-        # Clear existing items
+        # Clear the current list
         self.predictors_list.clear()
         self.predictor_items = {}
-        self.selected_predictor = None
         
-        # Add each column as a predictor
+        # Save current predictor roles before clearing
+        saved_roles = self.predictor_roles.copy()
+        
+        # Add each column as a predictor item
         for column in data.columns:
             if column not in excluded_columns:
                 # Create a custom widget for this predictor
                 predictor_widget = PredictorItem(column)
                 self.predictor_items[column] = predictor_widget
+                
+                # Restore previous role if it exists
+                if column in saved_roles:
+                    predictor_widget.set_role(saved_roles[column])
                 
                 # Add it to the list widget
                 item = QListWidgetItem(self.predictors_list)

@@ -98,10 +98,9 @@ class MatplotlibCanvas(FigureCanvas):
                 
                 # Calculate weighted average (sum of response / sum of weights) if both columns exist
                 if (response, 'sum') in grouped.columns and (weights, 'sum') in grouped.columns:
-                    grouped[response, 'weighted_avg'] = grouped[response, 'sum'] / grouped[weights, 'sum']
-                else:
-                    # Fallback - create a dummy weighted_avg column with zeros
-                    grouped[response, 'weighted_avg'] = 0.0
+                    # Handle division by zero and NaN values
+                    weights_sum = grouped[weights, 'sum'].replace(0, np.nan)
+                    grouped[response, 'weighted_avg'] = grouped[response, 'sum'].div(weights_sum)
                 
                 count_column = (weights, 'sum')
             else:
@@ -115,9 +114,6 @@ class MatplotlibCanvas(FigureCanvas):
                 # Calculate simple average (sum of response / count) if both columns exist
                 if (response, 'sum') in grouped.columns and (response, 'count') in grouped.columns:
                     grouped[response, 'weighted_avg'] = grouped[response, 'sum'] / grouped[response, 'count']
-                else:
-                    # Fallback - create a dummy weighted_avg column with zeros
-                    grouped[response, 'weighted_avg'] = 0.0
                 
                 # Add count column for the chart bars
                 count_column = (response, 'count')
@@ -138,10 +134,9 @@ class MatplotlibCanvas(FigureCanvas):
                 
                 # Calculate weighted average (sum of response / sum of weights) if both columns exist
                 if (response, 'sum') in grouped.columns and (weights, 'sum') in grouped.columns:
-                    grouped[response, 'weighted_avg'] = grouped[response, 'sum'] / grouped[weights, 'sum']
-                else:
-                    # Fallback - create a dummy weighted_avg column with zeros
-                    grouped[response, 'weighted_avg'] = 0.0
+                    # Handle division by zero and NaN values
+                    weights_sum = grouped[weights, 'sum'].replace(0, np.nan)
+                    grouped[response, 'weighted_avg'] = grouped[response, 'sum'].div(weights_sum)
                 
                 count_column = (weights, 'sum')
             else:
@@ -155,9 +150,6 @@ class MatplotlibCanvas(FigureCanvas):
                 # Calculate simple average (sum of response / count) if both columns exist
                 if (response, 'sum') in grouped.columns and (response, 'count') in grouped.columns:
                     grouped[response, 'weighted_avg'] = grouped[response, 'sum'] / grouped[response, 'count']
-                else:
-                    # Fallback - create a dummy weighted_avg column with zeros
-                    grouped[response, 'weighted_avg'] = 0.0
                 
                 # Add count column for the chart bars
                 count_column = (response, 'count')

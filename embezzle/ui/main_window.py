@@ -438,6 +438,10 @@ class EmbezzleMainWindow(QMainWindow):
             # Update the prediction set dropdown in the predictor sidebar
             self.predictors_sidebar.update_prediction_set_combo(split_column, self.data)
             
+            # Store current predictor terms to preserve them
+            current_terms = self.predictors_sidebar.get_model_terms()
+            had_model = len(current_terms) > 0
+            
             # Create filtered training dataset if both split column and train partition are specified
             if train_partition:
                 try:
@@ -453,14 +457,46 @@ class EmbezzleMainWindow(QMainWindow):
         else:
             # If no split column is specified, clear any training data to use the full dataset
             self.model_builder.clear_training_data()
+            # No need to preserve model since we're not changing training data
+            had_model = False
+            current_terms = []
             
         # Update the UI with the current predictor if one is selected
         if hasattr(self.predictors_sidebar, 'selected_predictor') and self.predictors_sidebar.selected_predictor:
             predictor = self.predictors_sidebar.selected_predictor
-            # Update the chart visualization
-            self.update_predictor_chart(predictor)
-            # Update the levels table with the current data
-            self.update_levels_table(predictor, response_variable, weight_column)
+            
+            # Update visualizations with proper error handling
+            try:
+                self.update_levels_table(predictor, response_variable, weight_column)
+                self.update_predictor_chart(predictor)
+            except Exception as e:
+                self.statusBar.showMessage(f"Error updating visualization: {str(e)}")
+                print(f"Visualization error: {str(e)}")
+        
+        # If we had a fitted model before changing training data, re-fit to update parameters
+        if had_model and len(current_terms) > 0:
+            try:
+                # Refit the model with the same terms but new training data
+                formula = f"{response_variable} ~ {' + '.join(current_terms)}"
+                
+                # Configure the model builder with the same formula
+                self.model_builder.set_formula(formula)
+                
+                # Build and fit the model with the new training data
+                self.model_builder.build_model()
+                self.model_builder.fit_model()
+                
+                # Update UI to reflect the new fit
+                self.update_model_stats_table()
+                
+                # Update the currently selected predictor's parameters if any
+                if hasattr(self.predictors_sidebar, 'selected_predictor') and self.predictors_sidebar.selected_predictor:
+                    self.update_parameter_stats(self.predictors_sidebar.selected_predictor)
+                
+                self.statusBar.showMessage(f"Model automatically refitted with new training data.")
+            except Exception as e:
+                self.statusBar.showMessage(f"Error refitting model: {str(e)}")
+                print(f"Model refitting error: {str(e)}")
         
         # Set family and link
         family = self.model_specs.get('family')
@@ -579,7 +615,13 @@ class EmbezzleMainWindow(QMainWindow):
             if weight_column and weight_column in self.data.columns:
                 self.model_builder.set_weights(self.data[weight_column])
             
-            # Build the model
+            # Make sure split column and train partition are applied if specified
+            split_column = self.model_specs.get('split_column')
+            train_partition = self.model_specs.get('train_partition')
+            if split_column and train_partition:
+                self.model_builder.set_training_data(split_column, train_partition)
+            
+            # Build the model - it will use training_data if available
             self.model_builder.build_model()
             
             results = self.model_builder.fit_model()
@@ -652,16 +694,15 @@ class EmbezzleMainWindow(QMainWindow):
         predictor_column : str
             The name of the selected predictor column
         """
-        if self.data is None or not self.model_specs:
+        if self.data is None or predictor_column not in self.data.columns:
+            self.chart_canvas.clear_plot()
             return
-            
-        # Get response variable from model specs
+        
+        # Get response from model specs
         response = self.model_specs.get('response_variable')
         if not response:
+            self.chart_canvas.clear_plot()
             return
-            
-        # Get weights column if specified
-        weights = self.model_specs.get('weight_column')
         
         # Store the selected predictor for reference
         self.predictors_sidebar.selected_predictor = predictor_column
@@ -715,9 +756,25 @@ class EmbezzleMainWindow(QMainWindow):
             self.max_value_spinner.blockSignals(False)
             self.intervals_spinner.blockSignals(False)
         
+        # Determine the data to use for visualization
+        viz_data = None
+        if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None:
+            viz_data = self.model_builder.training_data.copy()
+            
+            # If we have model predictions, make sure they are in the viz_data
+            if '_predicted' in self.data.columns:
+                viz_data['_predicted'] = self.data['_predicted']
+            
+            # Check for predictor-specific prediction column
+            pred_col = f'_predicted_{predictor_column}'
+            if pred_col in self.data.columns:
+                viz_data[pred_col] = self.data[pred_col]
+        else:
+            viz_data = self.data
+            
         # Create the dual-axis chart
         self.chart_canvas.create_dual_axis_chart(
-            data=self.model_builder.training_data if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None else self.data,
+            data=viz_data,
             predictor=predictor_column,
             response=response,
             weights=weights,
@@ -983,8 +1040,21 @@ class EmbezzleMainWindow(QMainWindow):
             The name of the weights column
         """
         # Use training_data if available, otherwise use original data
-        data_to_use = self.model_builder.training_data if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None else self.data
-        
+        data_to_use = None
+        if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None:
+            data_to_use = self.model_builder.training_data.copy()
+            
+            # If we have model predictions, make sure they are in the viz_data
+            if '_predicted' in self.data.columns:
+                data_to_use['_predicted'] = self.data['_predicted']
+            
+            # Check for predictor-specific prediction column
+            pred_col = f'_predicted_{predictor_column}'
+            if pred_col in self.data.columns:
+                data_to_use[pred_col] = self.data[pred_col]
+        else:
+            data_to_use = self.data
+            
         if data_to_use is None or predictor_column not in data_to_use.columns:
             self.levels_table.setRowCount(0)
             return
@@ -1084,14 +1154,28 @@ class EmbezzleMainWindow(QMainWindow):
     
     def update_chart_with_new_ranges(self):
         """Update the chart using the custom ranges specified in the spinners"""
-        if not hasattr(self.predictors_sidebar, 'selected_predictor') or not self.predictors_sidebar.selected_predictor:
+        if not hasattr(self, 'data') or self.data is None:
             return
             
+        # Get the currently selected predictor
         predictor_column = self.predictors_sidebar.selected_predictor
         
         # Use training_data if available, otherwise use original data
-        data_to_use = self.model_builder.training_data if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None else self.data
-        
+        data_to_use = None
+        if hasattr(self.model_builder, 'training_data') and self.model_builder.training_data is not None:
+            data_to_use = self.model_builder.training_data.copy()
+            
+            # If we have model predictions, make sure they are in the viz_data
+            if '_predicted' in self.data.columns:
+                data_to_use['_predicted'] = self.data['_predicted']
+            
+            # Check for predictor-specific prediction column
+            pred_col = f'_predicted_{predictor_column}'
+            if pred_col in self.data.columns:
+                data_to_use[pred_col] = self.data[pred_col]
+        else:
+            data_to_use = self.data
+            
         # Skip if predictor is not continuous
         if not pd.api.types.is_numeric_dtype(data_to_use[predictor_column]):
             return
@@ -1100,7 +1184,7 @@ class EmbezzleMainWindow(QMainWindow):
         response = self.model_specs.get('response_variable')
         if not response:
             return
-            
+        
         # Get weights column if specified
         weights = self.model_specs.get('weight_column')
         
