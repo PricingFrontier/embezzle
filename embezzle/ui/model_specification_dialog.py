@@ -7,7 +7,7 @@ error families, link functions, and other configuration options.
 
 from PyQt6.QtWidgets import (
     QDialog, QVBoxLayout, QFormLayout, QComboBox, QRadioButton, 
-    QGroupBox, QDialogButtonBox, QLineEdit, QButtonGroup, QHBoxLayout
+    QGroupBox, QDialogButtonBox, QLineEdit, QButtonGroup, QHBoxLayout, QLabel
 )
 from PyQt6.QtCore import Qt
 
@@ -45,7 +45,18 @@ class ModelSpecificationDialog(QDialog):
         self.split_combo = QComboBox()
         self.split_combo.addItem("(None)")
         self._add_columns_to_combo(self.split_combo, columns)
+        self.split_combo.currentTextChanged.connect(self._update_train_partition_combo)
         form_layout.addRow("Split Column:", self.split_combo)
+        
+        # Train partition dropdown (initially hidden, populated after split column is selected)
+        self.train_partition_label = QLabel("Train partition:")
+        self.train_partition_combo = QComboBox()
+        self.train_partition_combo.addItem("(None)")
+        form_layout.addRow(self.train_partition_label, self.train_partition_combo)
+        
+        # Hide train partition until a split column is selected
+        self.train_partition_label.setVisible(False)
+        self.train_partition_combo.setVisible(False)
         
         # Add the form layout to the main layout
         layout.addLayout(form_layout)
@@ -90,6 +101,13 @@ class ModelSpecificationDialog(QDialog):
             index = self.split_combo.findText(specs['split_column'])
             if index >= 0:
                 self.split_combo.setCurrentIndex(index)
+                self._update_train_partition_combo(specs['split_column'])
+                
+                # Set train partition if available
+                if 'train_partition' in specs and specs['train_partition']:
+                    index = self.train_partition_combo.findText(specs['train_partition'])
+                    if index >= 0:
+                        self.train_partition_combo.setCurrentIndex(index)
                 
         # Set family/error structure
         if 'family' in specs:
@@ -131,6 +149,23 @@ class ModelSpecificationDialog(QDialog):
         """Add columns to a combo box"""
         for column in columns:
             combo.addItem(column)
+            
+    def _update_train_partition_combo(self, split_column):
+        """Update the train partition combo with unique values from the split column"""
+        # Show/hide the train partition dropdown based on split column selection
+        has_split = split_column and split_column != "(None)"
+        self.train_partition_label.setVisible(has_split)
+        self.train_partition_combo.setVisible(has_split)
+        
+        self.train_partition_combo.clear()
+        self.train_partition_combo.addItem("(None)")
+        
+        if has_split and hasattr(self.parent, 'data') and self.parent.data is not None:
+            if split_column in self.parent.data.columns:
+                # Get unique values from the split column
+                unique_values = self.parent.data[split_column].unique()
+                for value in unique_values:
+                    self.train_partition_combo.addItem(str(value))
             
     def _create_error_group(self):
         """Create the error structure (family) group box"""
@@ -241,6 +276,7 @@ class ModelSpecificationDialog(QDialog):
             'response_variable': self.response_combo.currentText() if self.response_combo.currentText() != "(None)" else None,
             'weight_column': self.weight_combo.currentText() if self.weight_combo.currentText() != "(None)" else None,
             'split_column': self.split_combo.currentText() if self.split_combo.currentText() != "(None)" else None,
+            'train_partition': self.train_partition_combo.currentText() if self.train_partition_combo.currentText() != "(None)" else None,
             'family': self._get_selected_family(),
             'link': self._get_selected_link()
         }

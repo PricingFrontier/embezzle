@@ -434,6 +434,8 @@ class EmbezzleMainWindow(QMainWindow):
         # Set the split column
         if split_column:
             self.statusBar.showMessage(f"Using '{split_column}' for train/test/validation splits")
+            # Update the prediction set dropdown in the predictor sidebar
+            self.predictors_sidebar.update_prediction_set_combo(split_column, self.data)
         
         # Set family and link
         family = self.model_specs.get('family')
@@ -519,7 +521,7 @@ class EmbezzleMainWindow(QMainWindow):
             family = self.model_specs.get('family')
             link = self.model_specs.get('link')
             
-            # Map UI names to statsmodels names
+            # Map UI names to statsmodels family and link
             family_map = {
                 "Normal": "gaussian",
                 "Poisson": "poisson",

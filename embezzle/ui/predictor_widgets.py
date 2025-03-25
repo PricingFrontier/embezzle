@@ -7,7 +7,8 @@ in the Embezzle application.
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLabel, QCheckBox, 
-    QListWidget, QListWidgetItem, QPushButton, QMenu, QSizePolicy
+    QListWidget, QListWidgetItem, QPushButton, QMenu, QSizePolicy,
+    QComboBox, QFormLayout
 )
 from PyQt6.QtCore import Qt, QSize
 from PyQt6.QtGui import QAction
@@ -125,7 +126,18 @@ class PredictorsSidebar(QWidget):
         # Set up the layout
         layout = QVBoxLayout(self)
         
-        # Add Fit button at the top
+        # Create form layout for the prediction set selection
+        form_layout = QFormLayout()
+        
+        # Create a dropdown for prediction set selection (populated by split column values)
+        self.prediction_set_combo = QComboBox()
+        self.prediction_set_combo.addItem("All")
+        form_layout.addRow("Prediction Set:", self.prediction_set_combo)
+        
+        # Add the form layout to the main layout
+        layout.addLayout(form_layout)
+        
+        # Add Fit button after the prediction set combo
         self.fit_button = QPushButton("Fit")
         self.fit_button.setStyleSheet("font-weight: bold; font-size: 14px;")
         layout.addWidget(self.fit_button)
@@ -159,6 +171,17 @@ class PredictorsSidebar(QWidget):
         
         # Connect selection changed signal
         self.predictors_list.itemClicked.connect(self.handle_predictor_clicked)
+    
+    def update_prediction_set_combo(self, split_column, data=None):
+        """Update the prediction set dropdown with values from the split column"""
+        self.prediction_set_combo.clear()
+        self.prediction_set_combo.addItem("All")
+        
+        if split_column and data is not None and split_column in data.columns:
+            # Get unique values from the split column
+            unique_values = data[split_column].unique()
+            for value in unique_values:
+                self.prediction_set_combo.addItem(str(value))
     
     def show_context_menu(self, position):
         """Show context menu for the predictor item"""
@@ -257,3 +280,8 @@ class PredictorsSidebar(QWidget):
             if widget.role:  # If it has a role (factor or variate)
                 terms.extend(widget.get_formula_terms())
         return terms
+        
+    def get_selected_prediction_set(self):
+        """Get the currently selected prediction set"""
+        prediction_set = self.prediction_set_combo.currentText()
+        return None if prediction_set == "All" else prediction_set
